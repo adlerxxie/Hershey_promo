@@ -1,0 +1,11 @@
+Panel Structure Analysis:
+The panel is balanced.
+
+Breakdown of Observations per Entity:
+216    1682
+Name: count, dtype: int64
+
+Number of Entities: 1682
+Number of Time Periods: 216
+
+Each unit_id and week_start_date combination is unique.

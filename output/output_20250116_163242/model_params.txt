@@ -1,0 +1,7 @@
+filepath: C:\Data\hershey_promo_impact\shipment_hist_weekly_with_promo_features.csv
+qty_column: qty
+x_columns: ['total_expense_trade']
+y_column: qty
+lags: [0]
+leads: [1]
+output_folder: C:\Users\AdlerXie\Documents\GitHub\Hershey_promo\output\output_20250116_163242
