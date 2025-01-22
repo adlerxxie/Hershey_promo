@@ -1,0 +1,7 @@
+hershey_promo_env/
+.venv/
+__pycache__/
+.vscode/
+
+
+output/
