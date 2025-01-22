@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
-from graphs import panel_analysis_visualizations
+from pre_analysis import panel_analysis_visualizations, descriptive_statistics, panel_structure_analysis
 
 def create_output_folder(base_path):
     """Create a timestamped output folder."""
@@ -36,9 +36,9 @@ def aggregate_data(df, groupby_cols, sum_columns, first_non_missing_columns):
     aggregated_df = pd.get_dummies(aggregated_df, columns=['promotion_type'], dummy_na=True)
     return aggregated_df
 
-def generate_features(df, qty_col):
+def generate_Y_variables(df, qty_col, lags, leads):
     """Generate lag, lead, and log-transformed features based on a specified column."""
-
+    # generate Y variables
     for lag in lags:
         df[f'{qty_col}_lag{lag}'] = df.groupby(level='unit_id')[qty_col].shift(lag)
 
@@ -46,120 +46,73 @@ def generate_features(df, qty_col):
         df[f'{qty_col}_lead{lead}'] = df.groupby(level='unit_id')[qty_col].shift(-lead)
     return df
 
+def generate_X_variables(df, x_columns, lags, leads):
+    """Generate lag, lead, and log-transformed features based on a specified column.store in a list"""
+    x_columns_lag = []
+    # generate X variables
+    for lag in lags:
+        for x_col in x_columns:
+            df[f'{x_col}_lag{lag}'] = df.groupby(level='unit_id')[x_col].shift(lag)
+            x_columns_lag.append(f'{x_col}_lag{lag}')
+
+    x_columns_lead = []
+    for lead in leads:
+        for x_col in x_columns:
+            df[f'{x_col}_lead{lead}'] = df.groupby(level='unit_id')[x_col].shift(-lead)
+            x_columns_lead.append(f'{x_col}_lead{lead}')
+
+    return df, x_columns_lag, x_columns_lead
+
 def prepare_panel_data(df, groupby_cols):
     """Prepare data for panel analysis by setting a multi-index."""
     df['unit_id'] = df['sales_org'].astype(str) + '_' + df['dp_cust'].astype(str) + '_' + df['dmd_item_10'].astype(str)
     df = df.set_index(['unit_id', 'week_start_date'])
     return df
 
-def descriptive_statistics(df, output_folder):
-    """Perform descriptive statistics and save results."""
-    # Generate the descriptive output file path
-    descriptive_output_path = os.path.join(output_folder, "descriptive_statistics.xlsx")
-
-    with pd.ExcelWriter(descriptive_output_path) as writer:
-        # Descriptive statistics for numeric columns
-        numeric_stats = df.describe()
-        numeric_stats.to_excel(writer, sheet_name="Numeric_Stats")
-
-        # Count of unique values for non-numeric columns
-        non_numeric_cols = df.select_dtypes(exclude=['number']).columns
-        for col in non_numeric_cols:
-            unique_counts = df[col].value_counts()
-            unique_counts.to_excel(writer, sheet_name=f"Unique_Counts_{col}")
-
-        # Variability analysis
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if not numeric_cols.empty:
-            variability = df[numeric_cols].groupby(level='unit_id').var().mean()
-            variability_df = pd.DataFrame(variability, columns=["Variability"])
-            variability_df.to_excel(writer, sheet_name="Variability_Across_Entities")
-
-            # Correlation matrix
-            corr_matrix = df[numeric_cols].corr()
-            corr_matrix.to_excel(writer, sheet_name="Correlation_Matrix")
-
-            # Heatmap
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(corr_matrix, annot=True, fmt=".2f", cmap="coolwarm")
-            plt.title("Correlation Matrix Heatmap")
-            heatmap_path = os.path.join(output_folder, "correlation_heatmap.png")
-            plt.savefig(heatmap_path)
-            plt.close()
-
-    print(f"Descriptive statistics saved to {descriptive_output_path}")
-
-
-
-def panel_structure_analysis(df, output_folder):
-    """Check panel structure and balance, and save results."""
-    results = []
-
-    # Check number of observations per entity
-    obs_per_entity = df.groupby(level='unit_id').size()
-
-    # Determine if the panel is balanced
-    min_obs = obs_per_entity.min()
-    max_obs = obs_per_entity.max()
-    is_balanced = min_obs == max_obs
-
-    results.append("Panel Structure Analysis:")
-    if is_balanced:
-        results.append("The panel is balanced.")
-    else:
-        results.append("The panel is unbalanced.")
-        results.append(f"Minimum observations per entity: {min_obs}")
-        results.append(f"Maximum observations per entity: {max_obs}")
-
-    # Add a breakdown of panel balance
-    panel_balance = obs_per_entity.value_counts()
-    results.append("\nBreakdown of Observations per Entity:")
-    results.append(str(panel_balance))
-
-    # Panel Dimensions
-    num_entities = len(obs_per_entity)
-    num_time_periods = len(df.index.get_level_values('week_start_date').unique())
-    results.append(f"\nNumber of Entities: {num_entities}")
-    results.append(f"Number of Time Periods: {num_time_periods}")
-
-    # Check Key Identifiers
-    duplicates = df.reset_index().duplicated(subset=['unit_id', 'week_start_date']).sum()
-    if duplicates == 0:
-        results.append("\nEach unit_id and week_start_date combination is unique.")
-    else:
-        results.append(f"\nWarning: {duplicates} duplicate entries found.")
-
-    # Save results to a text file
-    panel_analysis_path = os.path.join(output_folder, "panel_structure_analysis.txt")
-    with open(panel_analysis_path, 'w') as file:
-        file.write("\n".join(results))
-    
-    print(f"Panel structure analysis saved to {panel_analysis_path}")
-
-
-
-def run_panel_regression(df, x_columns, y_column, lags, leads):
-    """Run panel regression for lagged and lead variables."""
+def panel_reg(df, x_columns, y_column, lead_lags):
+    """Run panel regression for lagged and lead variables.
+    Args:
+        df: panel dataframe
+        x_columns: list of x variables
+        y_column: dependent variable
+        lead_lags: list of strings like ['lag1', 'lead1']
+    """
     results_summary = []
     
-    for y_var in [f'{y_column}_lag{lag}' for lag in lags] + [f'{y_column}_lead{lead}' for lead in leads]:
-        if y_var not in df.columns:
-            print(f"Warning: {y_var} not found in DataFrame. Skipping...")
-            continue
-        y = df[y_var].dropna()
-        X_subset = df[x_columns].loc[y.index]  # Align X with the available y data
-
+    # Loop through each lag/lead combination
+    for time_shift in lead_lags:
+        # Filter X columns based on the current lag/lead
+        x_columns_filtered = []
+        column_mapping = {}  # Dictionary to store original:new column names that is standard for all the lead lag models, for easy results comparison
+        
+        for col in x_columns:
+            # Include if column starts with 'promotion' and ends with current lag/lead
+            if col.startswith('promotion_type_'):
+                if col.endswith(time_shift):
+                    new_col = col.replace(time_shift, 'TimeShift')
+                    column_mapping[col] = new_col
+                    x_columns_filtered.append(col)
+            # Include all non-promotion columns that contains the word lag
+            elif 'lag' in col:
+                x_columns_filtered.append(col)
+        
+        # Prepare data for regression
+        y = df[y_column]
+        X_subset = df[x_columns_filtered].copy()  # Get data with original column names
+        X_subset = X_subset.rename(columns=column_mapping)  # Rename columns after selection
+        
         # Fit the model
         model = PanelOLS(y, X_subset, entity_effects=True, time_effects=True)
         results = model.fit(cov_type='clustered', cluster_entity=True)
 
         # Store results
         summary_dict = {
-            'Dependent Variable': y_var,
+            'Dependent Variable': y_column,
+            'Time_Shift': time_shift,
             'R-squared': results.rsquared,
             'Number of Observations': results.nobs
         }
-        for var in x_columns:
+        for var in X_subset.columns:
             summary_dict[f'{var}_coef'] = results.params.get(var, None)
             summary_dict[f'{var}_pval'] = results.pvalues.get(var, None)
         results_summary.append(summary_dict)
@@ -170,25 +123,26 @@ def run_panel_regression(df, x_columns, y_column, lags, leads):
 
 def save_results(df, output_folder, params):
     """Save results to a file and include the parameters used for the run."""
-    model_output_path = os.path.join(output_folder, "model_results.xlsx")
-    params_path = os.path.join(output_folder, "model_params.txt")
+    # Use model name in file paths if available
+    model_name = params.get('model_name', 'model')  # Default to 'model' if not specified
+    model_output_path = os.path.join(output_folder, f"{model_name}_results.xlsx")
+    params_path = os.path.join(output_folder, f"{model_name}_params.txt")
 
     # Save the results dataframe
     df.to_excel(model_output_path, index=False)
 
     # Save the parameters to a text file
-    
     with open(params_path, 'w') as f:
         for key, value in params.items():
             f.write(f"{key}: {value}\n")
 
 # Example usage
 if __name__ == "__main__":
-    #input file location
-    filepath = "C:\\Data\\hershey_promo_impact\\shipment_hist_weekly_with_promo_features.csv"
+    # Update the input file location to use Linux-style path
+    filepath = "/mnt/c/Data/hershey_promo_impact/shipment_hist_weekly_with_promo_features.csv"
     
-    #output file location
-    base_output_path = "C:\\Users\\AdlerXie\\Documents\\GitHub\\Hershey_promo\\output"
+    # Update the output file location to use Linux-style path
+    base_output_path = "/mnt/c/Users/AdlerXie/Documents/GitHub/Hershey_promo/output"
     output_folder = create_output_folder(base_output_path)
     print(f"All outputs will be saved to {output_folder}")
 
@@ -209,50 +163,69 @@ if __name__ == "__main__":
     aggregated_df = prepare_panel_data(aggregated_df, groupby_cols)
     print('finished preparing panel data')
 
-    # Perform panel structure analysis
+    '''# Perform panel structure analysis
     panel_structure_analysis(aggregated_df, output_folder)
 
     #   Perform descriptive statistics
     descriptive_statistics(aggregated_df, output_folder)  # Pass the output path
 
-     # Specify whether to use qty or log_qty for feature generation
-    # generate log_qty, log_forecast_cot_spend, log_total_expense_trade
-    aggregated_df['log_qty'] = np.log1p(aggregated_df['qty']+1)
-   
-
-    qty_column = 'qty'  # Change to 'log_qty' or another column as needed
-
     # Generate visualizations to assess fixed effects suitability
     panel_analysis_visualizations(aggregated_df, 'qty', output_folder)
     print("Visualizations for panel analysis have been generated.")
-
-    # define how many lead and lags to use
-    lags = [ 0]
-    leads = [1]
-    aggregated_df = generate_features(aggregated_df, qty_col=qty_column)
-    print('finished generating features')
-
-    # x variables
+'''
+    # First, generate log transformations
+    aggregated_df['log_qty'] = np.log1p(aggregated_df['qty']+1)
     aggregated_df['log_forecast_cot_spend'] = np.log1p(aggregated_df['forecast_cot_spend']+1)
     aggregated_df['log_total_expense_trade'] = np.log1p(aggregated_df['total_expense_trade']+1)
 
-    x_columns = [
-        'total_expense_trade'
+    # Then define x_base_columns with the newly created columns
+    x_base_columns = [
+        'promotion_type_Corporate Promotions',
+        'promotion_type_Correction',
+        'promotion_type_EDLC',
+        'promotion_type_EDLP',
+        'promotion_type_Hi Lo',
+        'promotion_type_Miscellaneous',
+        # 'total_expense_trade',
+        #'forecast_cot_spend',
+        # 'log_forecast_cot_spend',
+        # 'log_total_expense_trade',
+        'qty',
+        'log_qty'
+    ]
+    
+    # Now generate X variables
+    aggregated_df, x_columns_lag, x_columns_lead = generate_X_variables(aggregated_df, x_base_columns, lags=[1,2,4,8,12,26,52], leads=[0,1,2,4,8,12])
+
+    # add promotion type dummies to x_columns_lag
+    promotion_dummies = [
+        'promotion_type_Corporate Promotions',
+        'promotion_type_Correction',
+        'promotion_type_EDLC',
+        'promotion_type_EDLP',
+        'promotion_type_Hi Lo',
+        'promotion_type_Miscellaneous'
     ]
 
-   
+    x_columns = promotion_dummies + x_columns_lag + x_columns_lead
+    print('finished generating X variables')
+
+   # Specify whether to use qty or log_qty for feature generation
+    # generate log_qty, log_forecast_cot_spend, log_total_expense_trade
+    qty_column = 'log_qty'  # Change to 'log_qty' or another column as needed for params doc
     y_column = qty_column  # Align with the chosen qty_column
-    results_df = run_panel_regression(aggregated_df, x_columns, y_column, lags, leads)
+
+    model = "panel_reg" # for params doc
+    results_df = panel_reg(aggregated_df, x_columns, y_column, ['lag12', 'lag8', 'lag4', 'lag2', 'lag1', 'lead0', 'lead1', 'lead2', 'lead4', 'lead8', 'lead12'])
 
     # Define parameters for this run
     params = {
-    'filepath': filepath,
-    'qty_column': qty_column,
-    'x_columns': x_columns,
-    'y_column': y_column,
-    'lags': lags,
-    'leads': leads,
-    'output_folder': output_folder
+        'model_name': model,  # Add model name to params
+        'filepath': filepath,
+        'qty_column': qty_column,
+        'x_columns': x_columns,
+        'y_column': y_column,
+        'output_folder': output_folder
     }
 
     # Save results to the output folder
