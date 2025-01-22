@@ -32,8 +32,8 @@ def aggregate_data(df, groupby_cols, sum_columns, first_non_missing_columns):
     # Replace promotion_type with NA if on_promotion is False
     aggregated_df.loc[aggregated_df['on_promotion'] == False, 'promotion_type'] = np.nan
 
-    # Create dummy variables for promotion_type
-    aggregated_df = pd.get_dummies(aggregated_df, columns=['promotion_type'], dummy_na=True)
+    # Create dummy variables for promotion_type, sales_status
+    aggregated_df = pd.get_dummies(aggregated_df, columns=['promotion_type', 'sales_status'], dummy_na=True)
     return aggregated_df
 
 def generate_Y_variables(df, qty_col, lags, leads):
@@ -47,7 +47,7 @@ def generate_Y_variables(df, qty_col, lags, leads):
     return df
 
 def generate_X_variables(df, x_columns, lags, leads):
-    """Generate lag, lead, and log-transformed features based on a specified column.store in a list"""
+    """Generate lag, lead, and log-transformed features based on a specified column. store in a list"""
     x_columns_lag = []
     # generate X variables
     for lag in lags:
@@ -69,21 +69,24 @@ def prepare_panel_data(df, groupby_cols):
     df = df.set_index(['unit_id', 'week_start_date'])
     return df
 
-def panel_reg(df, x_columns, y_column, lead_lags):
+def panel_reg(df, x_columns, x_lag, y_column, promotion_lead_lags):
     """Run panel regression for lagged and lead variables.
     Args:
         df: panel dataframe
         x_columns: list of x variables
+        x_lag: list of lags to include for non-promotion variables
         y_column: dependent variable
-        lead_lags: list of strings like ['lag1', 'lead1']
+        promotion_lead_lags: which promotion lead or lag to set as treatment
     """
     results_summary = []
     
     # Loop through each lag/lead combination
-    for time_shift in lead_lags:
+    for time_shift in promotion_lead_lags:
+        print(f"\nProcessing time shift: {time_shift}")
+        
         # Filter X columns based on the current lag/lead
         x_columns_filtered = []
-        column_mapping = {}  # Dictionary to store original:new column names that is standard for all the lead lag models, for easy results comparison
+        column_mapping = {}  # Dictionary to store original:new column names
         
         for col in x_columns:
             # Include if column starts with 'promotion' and ends with current lag/lead
@@ -92,30 +95,37 @@ def panel_reg(df, x_columns, y_column, lead_lags):
                     new_col = col.replace(time_shift, 'TimeShift')
                     column_mapping[col] = new_col
                     x_columns_filtered.append(col)
-            # Include all non-promotion columns that contains the word lag
-            elif 'lag' in col:
+            # Include only non-promotion columns with lags specified in x_lag
+            elif any(col.endswith(lag) for lag in x_lag):
                 x_columns_filtered.append(col)
+        
+        print(f"Columns selected: {x_columns_filtered}")
         
         # Prepare data for regression
         y = df[y_column]
-        X_subset = df[x_columns_filtered].copy()  # Get data with original column names
-        X_subset = X_subset.rename(columns=column_mapping)  # Rename columns after selection
+        X_subset = df[x_columns_filtered].copy()
+        X_subset = X_subset.rename(columns=column_mapping)
         
-        # Fit the model
-        model = PanelOLS(y, X_subset, entity_effects=True, time_effects=True)
-        results = model.fit(cov_type='clustered', cluster_entity=True)
+        try:
+            # Fit the model with check_rank=False
+            model = PanelOLS(y, X_subset, entity_effects=True, time_effects=True, check_rank=False)
+            results = model.fit(cov_type='clustered', cluster_entity=True)
 
-        # Store results
-        summary_dict = {
-            'Dependent Variable': y_column,
-            'Time_Shift': time_shift,
-            'R-squared': results.rsquared,
-            'Number of Observations': results.nobs
-        }
-        for var in X_subset.columns:
-            summary_dict[f'{var}_coef'] = results.params.get(var, None)
-            summary_dict[f'{var}_pval'] = results.pvalues.get(var, None)
-        results_summary.append(summary_dict)
+            # Store results
+            summary_dict = {
+                'Dependent Variable': y_column,
+                'Time_Shift': time_shift,
+                'R-squared': results.rsquared,
+                'Number of Observations': results.nobs
+            }
+            for var in X_subset.columns:
+                summary_dict[f'{var}_coef'] = results.params.get(var, None)
+                summary_dict[f'{var}_pval'] = results.pvalues.get(var, None)
+            results_summary.append(summary_dict)
+            
+        except Exception as e:
+            print(f"Error in time_shift {time_shift}: {str(e)}")
+            continue
 
     return pd.DataFrame(results_summary)
 
@@ -163,16 +173,8 @@ if __name__ == "__main__":
     aggregated_df = prepare_panel_data(aggregated_df, groupby_cols)
     print('finished preparing panel data')
 
-    '''# Perform panel structure analysis
-    panel_structure_analysis(aggregated_df, output_folder)
+    
 
-    #   Perform descriptive statistics
-    descriptive_statistics(aggregated_df, output_folder)  # Pass the output path
-
-    # Generate visualizations to assess fixed effects suitability
-    panel_analysis_visualizations(aggregated_df, 'qty', output_folder)
-    print("Visualizations for panel analysis have been generated.")
-'''
     # First, generate log transformations
     aggregated_df['log_qty'] = np.log1p(aggregated_df['qty']+1)
     aggregated_df['log_forecast_cot_spend'] = np.log1p(aggregated_df['forecast_cot_spend']+1)
@@ -190,8 +192,13 @@ if __name__ == "__main__":
         #'forecast_cot_spend',
         # 'log_forecast_cot_spend',
         # 'log_total_expense_trade',
-        'qty',
-        'log_qty'
+        # 'qty',
+        'log_qty',
+        'sales_status_Discontinued', 
+        # 'sales_status_National Distributi', 
+        'sales_status_Stop Sell', 
+        'sales_status_To Be Discontinued'
+        # 'sales_status_0', 'sales_status_nan' # this is the default value for sales_status, set as base category 
     ]
     
     # Now generate X variables
@@ -213,10 +220,25 @@ if __name__ == "__main__":
    # Specify whether to use qty or log_qty for feature generation
     # generate log_qty, log_forecast_cot_spend, log_total_expense_trade
     qty_column = 'log_qty'  # Change to 'log_qty' or another column as needed for params doc
-    y_column = qty_column  # Align with the chosen qty_column
 
+    '''
+    # Perform panel structure analysis
+    panel_structure_analysis(aggregated_df, output_folder)
+
+    #   Perform descriptive statistics
+    descriptive_statistics(aggregated_df, output_folder)  # Pass the output path
+
+    # Generate visualizations to assess fixed effects suitability
+    panel_analysis_visualizations(aggregated_df, 'qty', output_folder)
+    print("Visualizations for panel analysis have been generated.")
+'''
     model = "panel_reg" # for params doc
-    results_df = panel_reg(aggregated_df, x_columns, y_column, ['lag12', 'lag8', 'lag4', 'lag2', 'lag1', 'lead0', 'lead1', 'lead2', 'lead4', 'lead8', 'lead12'])
+    results_df = panel_reg(aggregated_df, 
+                           x_columns=x_columns, 
+                           x_lag=['xlag52', 'lag12', 'lag8', 'lag4', 'lag2', 'lag1'],
+                           y_column=qty_column, 
+                           promotion_lead_lags=['lag12', 'lag8', 'lag4', 'lag2', 'lag1', 'lead0', 'lead1', 'lead2', 'lead4', 'lead8', 'lead12'],
+                           )
 
     # Define parameters for this run
     params = {
@@ -224,7 +246,7 @@ if __name__ == "__main__":
         'filepath': filepath,
         'qty_column': qty_column,
         'x_columns': x_columns,
-        'y_column': y_column,
+        'y_column': qty_column,
         'output_folder': output_folder
     }
 
