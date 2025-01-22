@@ -3,6 +3,92 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
+def descriptive_statistics(df, output_folder):
+    """Perform descriptive statistics and save results."""
+    # Generate the descriptive output file path
+    descriptive_output_path = os.path.join(output_folder, "descriptive_statistics.xlsx")
+
+    with pd.ExcelWriter(descriptive_output_path) as writer:
+        # Descriptive statistics for numeric columns
+        numeric_stats = df.describe()
+        numeric_stats.to_excel(writer, sheet_name="Numeric_Stats")
+
+        # Count of unique values for non-numeric columns
+        non_numeric_cols = df.select_dtypes(exclude=['number']).columns
+        for col in non_numeric_cols:
+            unique_counts = df[col].value_counts()
+            unique_counts.to_excel(writer, sheet_name=f"Unique_Counts_{col}")
+
+        # Variability analysis
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if not numeric_cols.empty:
+            variability = df[numeric_cols].groupby(level='unit_id').var().mean()
+            variability_df = pd.DataFrame(variability, columns=["Variability"])
+            variability_df.to_excel(writer, sheet_name="Variability_Across_Entities")
+
+            # Correlation matrix
+            corr_matrix = df[numeric_cols].corr()
+            corr_matrix.to_excel(writer, sheet_name="Correlation_Matrix")
+
+            # Heatmap
+            plt.figure(figsize=(10, 8))
+            sns.heatmap(corr_matrix, annot=True, fmt=".2f", cmap="coolwarm")
+            plt.title("Correlation Matrix Heatmap")
+            heatmap_path = os.path.join(output_folder, "correlation_heatmap.png")
+            plt.savefig(heatmap_path)
+            plt.close()
+
+    print(f"Descriptive statistics saved to {descriptive_output_path}")
+
+
+
+def panel_structure_analysis(df, output_folder):
+    """Check panel structure and balance, and save results."""
+    results = []
+
+    # Check number of observations per entity
+    obs_per_entity = df.groupby(level='unit_id').size()
+
+    # Determine if the panel is balanced
+    min_obs = obs_per_entity.min()
+    max_obs = obs_per_entity.max()
+    is_balanced = min_obs == max_obs
+
+    results.append("Panel Structure Analysis:")
+    if is_balanced:
+        results.append("The panel is balanced.")
+    else:
+        results.append("The panel is unbalanced.")
+        results.append(f"Minimum observations per entity: {min_obs}")
+        results.append(f"Maximum observations per entity: {max_obs}")
+
+    # Add a breakdown of panel balance
+    panel_balance = obs_per_entity.value_counts()
+    results.append("\nBreakdown of Observations per Entity:")
+    results.append(str(panel_balance))
+
+    # Panel Dimensions
+    num_entities = len(obs_per_entity)
+    num_time_periods = len(df.index.get_level_values('week_start_date').unique())
+    results.append(f"\nNumber of Entities: {num_entities}")
+    results.append(f"Number of Time Periods: {num_time_periods}")
+
+    # Check Key Identifiers
+    duplicates = df.reset_index().duplicated(subset=['unit_id', 'week_start_date']).sum()
+    if duplicates == 0:
+        results.append("\nEach unit_id and week_start_date combination is unique.")
+    else:
+        results.append(f"\nWarning: {duplicates} duplicate entries found.")
+
+    # Save results to a text file
+    panel_analysis_path = os.path.join(output_folder, "panel_structure_analysis.txt")
+    with open(panel_analysis_path, 'w') as file:
+        file.write("\n".join(results))
+    
+    print(f"Panel structure analysis saved to {panel_analysis_path}")
+
+
+
 def panel_analysis_visualizations(df, dependent_var, output_folder):
     """Generate visualizations to assess two-way fixed effects suitability and save results."""
 

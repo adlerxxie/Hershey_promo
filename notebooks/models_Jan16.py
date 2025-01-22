@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
-from graphs import panel_analysis_visualizations
+from notebooks.pre_analysis import panel_analysis_visualizations
 ##add comments
 
 def create_output_folder(base_path):
